@@ -1,0 +1,266 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DeliveryMode {
+  PHYSICAL
+  ONLINE
+  BLENDED
+}
+
+enum EntryStatus {
+  ACTIVE
+  CANCELLED
+  PENDING
+}
+
+enum ConflictType {
+  LECTURER_DOUBLE_BOOKING
+  VENUE_DOUBLE_BOOKING
+  STUDENT_GROUP_CLASH
+  ONLINE_PHYSICAL_CLASH
+  LECTURER_UNAVAILABLE
+  VENUE_UNAVAILABLE
+  VENUE_CAPACITY
+  MODE_VENUE_MISMATCH
+  OTHER
+}
+
+enum ConflictSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum SolverActionType {
+  ASSIGN
+  REASSIGN
+  SWAP
+  MOVE_TIME
+  MOVE_VENUE
+  CHANGE_LECTURER
+  CHANGE_MODE
+  COMBINATION
+}
+
+enum SolverRunStatus {
+  STARTED
+  COMPLETED
+  FAILED
+}
+
+model Course {
+  id                String           @id @default(cuid())
+  code              String           @unique
+  name              String
+  description       String?
+  department        String?
+  creditHours       Int              @default(3)
+  icon              String?
+  color             String?
+  active            Boolean          @default(true)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  timetableEntries  TimetableEntry[]
+}
+
+model Lecturer {
+  id                  String                    @id @default(cuid())
+  staffNumber         String                    @unique
+  name                String
+  email               String?                   @unique
+  department          String?
+  maxWeeklyHours      Int                       @default(18)
+  active              Boolean                   @default(true)
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+
+  timetableEntries    TimetableEntry[]
+  availabilities      LecturerAvailability[]
+}
+
+model LecturerAvailability {
+  id            String    @id @default(cuid())
+  lecturerId    String
+  dayOfWeek     Int
+  startTime     String
+  endTime       String
+  available     Boolean   @default(true)
+  reason        String?
+  createdAt     DateTime  @default(now())
+
+  lecturer      Lecturer  @relation(fields: [lecturerId], references: [id], onDelete: Cascade)
+
+  @@index([lecturerId, dayOfWeek])
+}
+
+model Venue {
+  id                  String              @id @default(cuid())
+  code                String              @unique
+  name                String
+  building            String
+  floor               String?
+  room                String?
+  capacity            Int
+  venueType           String?
+  hasComputers        Boolean             @default(false)
+  hasProjector        Boolean             @default(false)
+  supportsOnline      Boolean             @default(false)
+  active              Boolean             @default(true)
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  timetableEntries    TimetableEntry[]
+  availabilities      VenueAvailability[]
+}
+
+model VenueAvailability {
+  id            String    @id @default(cuid())
+  venueId       String
+  dayOfWeek     Int
+  startTime     String
+  endTime       String
+  available     Boolean   @default(true)
+  reason        String?
+  createdAt     DateTime  @default(now())
+
+  venue         Venue     @relation(fields: [venueId], references: [id], onDelete: Cascade)
+
+  @@index([venueId, dayOfWeek])
+}
+
+model StudentGroup {
+  id                String           @id @default(cuid())
+  code              String           @unique
+  name              String
+  programme         String?
+  yearOfStudy       Int?
+  studentCount      Int              @default(0)
+  active            Boolean          @default(true)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  timetableEntries  TimetableEntry[]
+}
+
+model TimeSlot {
+  id                String           @id @default(cuid())
+  dayOfWeek         Int
+  dayName           String
+  startTime         String
+  endTime           String
+  label             String
+  sortOrder         Int
+  active            Boolean          @default(true)
+  createdAt         DateTime         @default(now())
+
+  timetableEntries  TimetableEntry[]
+
+  @@unique([dayOfWeek, startTime, endTime])
+  @@index([dayOfWeek, sortOrder])
+}
+
+model TimetableEntry {
+  id                String           @id @default(cuid())
+  courseId          String
+  lecturerId        String
+  venueId            String?
+  studentGroupId    String
+  timeSlotId        String
+  deliveryMode      DeliveryMode
+  status            EntryStatus      @default(ACTIVE)
+
+  expectedStudents  Int              @default(0)
+  requiresComputers Boolean          @default(false)
+  requiresProjector Boolean          @default(false)
+  isPractical       Boolean          @default(false)
+  notes             String?
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  course            Course            @relation(fields: [courseId], references: [id])
+  lecturer          Lecturer          @relation(fields: [lecturerId], references: [id])
+  venue             Venue?            @relation(fields: [venueId], references: [id])
+  studentGroup      StudentGroup      @relation(fields: [studentGroupId], references: [id])
+  timeSlot          TimeSlot          @relation(fields: [timeSlotId], references: [id])
+
+  conflicts         Conflict[]
+  solverActions     SolverAction[]
+
+  @@index([timeSlotId])
+  @@index([lecturerId, timeSlotId])
+  @@index([venueId, timeSlotId])
+  @@index([studentGroupId, timeSlotId])
+}
+
+model Conflict {
+  id                  String            @id @default(cuid())
+  timetableEntryId    String
+  type                ConflictType
+  severity            ConflictSeverity
+  title               String
+  description         String
+  detectedAutomatically Boolean          @default(true)
+  resolved             Boolean           @default(false)
+  metadata            Json?
+  createdAt           DateTime           @default(now())
+  resolvedAt          DateTime?
+
+  timetableEntry      TimetableEntry    @relation(fields: [timetableEntryId], references: [id], onDelete: Cascade)
+
+  @@index([timetableEntryId])
+  @@index([type, resolved])
+}
+
+model SolverRun {
+  id                  String            @id @default(cuid())
+  scenario            String?
+  status              SolverRunStatus  @default(STARTED)
+  initialConflictCount Int              @default(0)
+  finalConflictCount   Int              @default(0)
+  totalCost            Float?
+  fairnessScore        Float?
+  classesMoved         Int              @default(0)
+  durationMs           Int?
+  reasoning            Json?
+  startedAt            DateTime         @default(now())
+  completedAt          DateTime?
+
+  actions             SolverAction[]
+}
+
+model SolverAction {
+  id                String             @id @default(cuid())
+  solverRunId       String
+  timetableEntryId  String
+  actionType        SolverActionType
+  fromTimeSlotId    String?
+  toTimeSlotId      String?
+  fromVenueId       String?
+  toVenueId         String?
+  fromLecturerId    String?
+  toLecturerId      String?
+  fromMode          DeliveryMode?
+  toMode            DeliveryMode?
+  cost              Float              @default(0)
+  fairnessPenalty   Float              @default(0)
+  valid             Boolean            @default(false)
+  rejectionReason   String?
+  reasoning         String?
+  actionOrder       Int
+  createdAt         DateTime           @default(now())
+
+  solverRun         SolverRun          @relation(fields: [solverRunId], references: [id], onDelete: Cascade)
+  timetableEntry    TimetableEntry     @relation(fields: [timetableEntryId], references: [id], onDelete: Cascade)
+
+  @@index([solverRunId, actionOrder])
+}
+    
