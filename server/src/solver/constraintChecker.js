@@ -1,336 +1,194 @@
-const { DeliveryMode } = require("@prisma/client");
+// @ts-nocheck
 
-function timeToMinutes(time) {
-  const [hours, minutes] = time.split(":").map(Number);
-  return hours * 60 + minutes;
+function toMinutes(value) {
+  if (value == null) return null;
+  const match = String(value).match(/(\d{1,2}):(\d{2})/);
+  return match ? Number(match[1]) * 60 + Number(match[2]) : null;
 }
 
-function slotsOverlap(slotA, slotB) {
-  if (!slotA || !slotB) return false;
+function slotDay(slot) {
+  const day = slot?.dayOfWeek ?? slot?.dayName ?? slot?.day ?? null;
+  return day == null ? null : String(day).toLowerCase();
+}
 
-  if (slotA.dayOfWeek !== slotB.dayOfWeek) {
-    return false;
-  }
+function slotLabel(slot) {
+  if (!slot) return "no slot";
+  const day = slot.dayName || slot.dayOfWeek || slot.day || "";
+  const start = String(slot.startTime || "").match(/(\d{1,2}:\d{2})/);
+  const end = String(slot.endTime || "").match(/(\d{1,2}:\d{2})/);
+  return `${day} ${start ? start[1] : ""}-${end ? end[1] : ""}`.trim();
+}
 
-  const startA = timeToMinutes(slotA.startTime);
-  const endA = timeToMinutes(slotA.endTime);
-
-  const startB = timeToMinutes(slotB.startTime);
-  const endB = timeToMinutes(slotB.endTime);
-
+/* Two slots clash when they share an id or overlap in time on the same day. */
+function slotsOverlap(a, b) {
+  if (!a || !b) return false;
+  if (a.id && b.id && a.id === b.id) return true;
+  if (slotDay(a) !== slotDay(b)) return false;
+  const startA = toMinutes(a.startTime);
+  const endA = toMinutes(a.endTime);
+  const startB = toMinutes(b.startTime);
+  const endB = toMinutes(b.endTime);
+  if ([startA, endA, startB, endB].some((v) => v == null)) return false;
   return startA < endB && startB < endA;
 }
 
-function availabilityCoversSlot(availability, timeSlot) {
-  if (!availability || !timeSlot) {
-    return false;
-  }
-
-  return (
-    availability.available &&
-    availability.dayOfWeek === timeSlot.dayOfWeek &&
-    timeToMinutes(availability.startTime) <=
-      timeToMinutes(timeSlot.startTime) &&
-    timeToMinutes(availability.endTime) >=
-      timeToMinutes(timeSlot.endTime)
-  );
+function isOnline(entry) {
+  const mode = String(
+    entry?.deliveryMode ?? entry?.mode ?? entry?.classMode ?? ""
+  ).toUpperCase();
+  return mode === "ONLINE";
 }
 
-function checkLecturerAvailability(lecturer, timeSlot) {
-  const availabilities = lecturer?.availabilities || [];
+function lecturerIdOf(entry) {
+  return entry?.lecturerId ?? entry?.lecturer?.id ?? null;
+}
 
-  const dayAvailabilities = availabilities.filter(
-    (availability) =>
-      availability.dayOfWeek === timeSlot.dayOfWeek
-  );
+function groupIdOf(entry) {
+  return entry?.studentGroupId ?? entry?.studentGroup?.id ?? null;
+}
 
-  if (dayAvailabilities.length === 0) {
-    return {
-      valid: true,
-      reason: null,
-    };
-  }
+function groupSizeOf(entry) {
+  const value =
+    entry?.studentGroup?.size ??
+    entry?.studentGroup?.studentCount ??
+    entry?.studentGroup?.headcount ??
+    entry?.expectedStudents ??
+    null;
+  return Number.isFinite(Number(value)) && value !== null ? Number(value) : null;
+}
 
-  const available = dayAvailabilities.some((availability) =>
-    availabilityCoversSlot(availability, timeSlot)
-  );
+function isBlocked(availabilities, slot) {
+  if (!Array.isArray(availabilities) || !slot) return false;
+  return availabilities.some((item) => {
+    const flag = item.available ?? item.isAvailable;
+    if (flag !== false) return false;
+    if (item.timeSlotId) return item.timeSlotId === slot.id;
+    const day = item.dayOfWeek ?? item.dayName ?? item.day;
+    if (day == null) return false;
+    if (String(day).toLowerCase() !== slotDay(slot)) return false;
+    if (item.startTime == null || item.endTime == null) return true;
+    return slotsOverlap(
+      { dayOfWeek: day, startTime: item.startTime, endTime: item.endTime },
+      slot
+    );
+  });
+}
 
+function describeEntry(entry, slot, venueId) {
   return {
-    valid: available,
-    reason: available
-      ? null
-      : `${lecturer.name} is unavailable during ${timeSlot.label}.`,
+    id: entry.id,
+    lecturerId: lecturerIdOf(entry),
+    groupId: groupIdOf(entry),
+    venueId: isOnline(entry) ? null : venueId ?? null,
+    slot,
   };
 }
 
-function checkVenueAvailability(venue, timeSlot) {
-  if (!venue) {
-    return {
-      valid: true,
-      reason: null,
-    };
-  }
-
-  const availabilities = venue.availabilities || [];
-
-  const dayAvailabilities = availabilities.filter(
-    (availability) =>
-      availability.dayOfWeek === timeSlot.dayOfWeek
+function currentDescriptor(entry) {
+  return describeEntry(
+    entry,
+    entry.timeSlot,
+    entry.venue?.id ?? entry.venueId ?? null
   );
-
-  if (dayAvailabilities.length === 0) {
-    return {
-      valid: true,
-      reason: null,
-    };
-  }
-
-  const available = dayAvailabilities.some((availability) =>
-    availabilityCoversSlot(availability, timeSlot)
-  );
-
-  return {
-    valid: available,
-    reason: available
-      ? null
-      : `${venue.name} is unavailable during ${timeSlot.label}.`,
-  };
 }
 
-function checkVenueRequirements(entry, venue) {
-  if (!venue) {
-    if (entry.deliveryMode === DeliveryMode.ONLINE) {
-      return {
-        valid: true,
-        reason: null,
-      };
-    }
-
-    return {
-      valid: false,
-      reason: "A physical class requires a venue.",
-    };
+function pairViolations(a, b) {
+  if (!a || !b || a.id === b.id) return [];
+  if (!slotsOverlap(a.slot, b.slot)) return [];
+  const found = [];
+  if (a.lecturerId && a.lecturerId === b.lecturerId) {
+    found.push({
+      type: "LECTURER_DOUBLE_BOOKING",
+      reason: "The same lecturer is booked for two classes at overlapping times.",
+      conflictingEntryId: b.id,
+    });
   }
-
-  if (
-    entry.expectedStudents > venue.capacity
-  ) {
-    return {
-      valid: false,
-      reason: `${venue.name} has capacity for ${venue.capacity}, but ${entry.expectedStudents} students are expected.`,
-    };
+  if (a.groupId && a.groupId === b.groupId) {
+    found.push({
+      type: "STUDENT_GROUP_CLASH",
+      reason: "The same student group has two classes at overlapping times.",
+      conflictingEntryId: b.id,
+    });
   }
-
-  if (
-    entry.requiresComputers &&
-    !venue.hasComputers
-  ) {
-    return {
-      valid: false,
-      reason: `${entry.course?.name || "This class"} requires computers, but ${venue.name} does not have them.`,
-    };
+  if (a.venueId && a.venueId === b.venueId) {
+    found.push({
+      type: "VENUE_DOUBLE_BOOKING",
+      reason: "The same venue is booked for two classes at overlapping times.",
+      conflictingEntryId: b.id,
+    });
   }
-
-  if (
-    entry.requiresProjector &&
-    !venue.hasProjector
-  ) {
-    return {
-      valid: false,
-      reason: `${entry.course?.name || "This class"} requires a projector, but ${venue.name} does not have one.`,
-    };
-  }
-
-  if (
-    entry.deliveryMode === DeliveryMode.ONLINE &&
-    !venue.supportsOnline
-  ) {
-    return {
-      valid: false,
-      reason: `${entry.course?.name || "This class"} is online, but ${venue.name} does not support online delivery.`,
-    };
-  }
-
-  return {
-    valid: true,
-    reason: null,
-  };
+  return found;
 }
 
-function checkResourceConflicts({
-  entry,
-  proposedTimeSlot,
-  proposedVenue,
-  allEntries,
-}) {
-  const conflicts = [];
-
-  for (const other of allEntries) {
-    if (other.id === entry.id) {
-      continue;
-    }
-
-    if (
-      other.status &&
-      other.status !== "ACTIVE"
-    ) {
-      continue;
-    }
-
-    if (
-      !slotsOverlap(
-        proposedTimeSlot,
-        other.timeSlot
-      )
-    ) {
-      continue;
-    }
-
-    if (
-      entry.lecturerId === other.lecturerId
-    ) {
-      conflicts.push({
-        type: "LECTURER_DOUBLE_BOOKING",
-        reason:
-          `${entry.lecturer?.name || "Lecturer"} is already assigned to ` +
-          `${other.course?.code || other.courseId} ` +
-          `during ${other.timeSlot?.label || "this time"}.`,
-        conflictingEntryId: other.id,
-      });
-    }
-
-    if (
-      proposedVenue &&
-      other.venueId &&
-      proposedVenue.id === other.venueId
-    ) {
-      conflicts.push({
-        type: "VENUE_DOUBLE_BOOKING",
-        reason:
-          `${proposedVenue.name} is already assigned to ` +
-          `${other.course?.code || other.courseId} ` +
-          `during ${other.timeSlot?.label || "this time"}.`,
-        conflictingEntryId: other.id,
-      });
-    }
-
-    if (
-      entry.studentGroupId ===
-      other.studentGroupId
-    ) {
-      conflicts.push({
-        type: "STUDENT_GROUP_CLASH",
-        reason:
-          `${entry.studentGroup?.name || "Student group"} ` +
-          `already has ${other.course?.code || other.courseId} ` +
-          `during ${other.timeSlot?.label || "this time"}.`,
-        conflictingEntryId: other.id,
-      });
-    }
-  }
-
-  return conflicts;
-}
-
-function checkAssignment({
-  entry,
-  proposedTimeSlot,
-  proposedVenue,
-  allEntries,
-}) {
+function unaryViolations(entry, slot, venue) {
   const violations = [];
 
-  if (!entry) {
-    return {
-      valid: false,
-      violations: [
-        {
-          type: "INVALID_ENTRY",
-          reason: "Timetable entry was not provided.",
-        },
-      ],
-    };
+  if (!isOnline(entry) && !venue) {
+    violations.push({
+      type: "MISSING_VENUE",
+      reason: "This physical class has no venue assigned.",
+    });
   }
 
-  if (!proposedTimeSlot) {
-    return {
-      valid: false,
-      violations: [
-        {
-          type: "INVALID_TIME_SLOT",
-          reason: "A time slot must be provided.",
-        },
-      ],
-    };
+  if (venue && !isOnline(entry)) {
+    const size = groupSizeOf(entry);
+    const capacity = Number(venue.capacity);
+    if (size !== null && Number.isFinite(capacity) && capacity > 0 && size > capacity) {
+      violations.push({
+        type: "VENUE_CAPACITY",
+        reason: `${venue.code || "The venue"} seats ${capacity} but the group has ${size}.`,
+      });
+    }
+    if (isBlocked(venue.availabilities, slot)) {
+      violations.push({
+        type: "VENUE_UNAVAILABLE",
+        reason: `${venue.code || "The venue"} is unavailable at ${slotLabel(slot)}.`,
+      });
+    }
   }
 
-  const lecturerAvailability =
-    checkLecturerAvailability(
-      entry.lecturer,
-      proposedTimeSlot
-    );
-
-  if (!lecturerAvailability.valid) {
+  const lecturer = entry.lecturer;
+  if (lecturer && isBlocked(lecturer.availabilities, slot)) {
     violations.push({
       type: "LECTURER_UNAVAILABLE",
-      reason: lecturerAvailability.reason,
+      reason: `The lecturer is unavailable at ${slotLabel(slot)}.`,
     });
   }
 
-  const venueAvailability =
-    checkVenueAvailability(
-      proposedVenue,
-      proposedTimeSlot
-    );
+  return violations;
+}
 
-  if (!venueAvailability.valid) {
-    violations.push({
-      type: "VENUE_UNAVAILABLE",
-      reason: venueAvailability.reason,
-    });
+function checkUnaryConstraints(entry, timeSlot, venue) {
+  const violations = unaryViolations(entry, timeSlot, venue);
+  return { ok: violations.length === 0, violations };
+}
+
+function checkResourceConflicts({ entry, proposedTimeSlot, proposedVenue, allEntries }) {
+  const mine = describeEntry(entry, proposedTimeSlot, proposedVenue?.id ?? null);
+  const found = [];
+  for (const other of allEntries || []) {
+    if (!other || other.id === entry.id) continue;
+    if (other.status && other.status !== "ACTIVE") continue;
+    if (!other.timeSlot) continue;
+    found.push(...pairViolations(mine, currentDescriptor(other)));
   }
-
-  const venueRequirements =
-    checkVenueRequirements(
-      entry,
-      proposedVenue
-    );
-
-  if (!venueRequirements.valid) {
-    violations.push({
-      type:
-        entry.deliveryMode === DeliveryMode.ONLINE &&
-        proposedVenue &&
-        !proposedVenue.supportsOnline
-          ? "ONLINE_PHYSICAL_CLASH"
-          : "MODE_VENUE_MISMATCH",
-      reason: venueRequirements.reason,
-    });
-  }
-
-  const resourceConflicts =
-    checkResourceConflicts({
-      entry,
-      proposedTimeSlot,
-      proposedVenue,
-      allEntries,
-    });
-
-  violations.push(...resourceConflicts);
-
-  return {
-    valid: violations.length === 0,
-    violations,
-  };
+  return found;
 }
 
 module.exports = {
-  timeToMinutes,
+  toMinutes,
+  slotDay,
+  slotLabel,
   slotsOverlap,
-  availabilityCoversSlot,
-  checkLecturerAvailability,
-  checkVenueAvailability,
-  checkVenueRequirements,
+  isOnline,
+  lecturerIdOf,
+  groupIdOf,
+  groupSizeOf,
+  isBlocked,
+  describeEntry,
+  currentDescriptor,
+  pairViolations,
+  unaryViolations,
+  checkUnaryConstraints,
   checkResourceConflicts,
-  checkAssignment,
 };

@@ -1,13 +1,7 @@
-import { useState } from "react";
-import {
-  BrainCircuit,
-  Menu,
-  X,
-} from "lucide-react";
-import {
-  Link,
-  NavLink,
-} from "react-router-dom";
+import { motion } from "framer-motion";
+import { BrainCircuit, Menu, X, Zap } from "lucide-react";
+import { Link, NavLink } from "react-router-dom";
+import { useState, useEffect } from "react";
 
 const links = [
   {
@@ -34,24 +28,70 @@ const links = [
 
 export default function Navbar() {
   const [open, setOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+
+  useEffect(() => {
+    function handleScroll() {
+      setScrolled(window.scrollY > 10);
+    }
+
+    window.addEventListener("scroll", handleScroll);
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   function closeMenu() {
     setOpen(false);
   }
 
-  return (
-    <header className="navbar">
-      <div className="navbar-inner">
+  const navVariants = {
+    closed: {
+      opacity: 0,
+      y: -10,
+      pointerEvents: "none",
+    },
+    open: {
+      opacity: 1,
+      y: 0,
+      pointerEvents: "auto",
+      transition: {
+        duration: 0.3,
+        staggerChildren: 0.05,
+        delayChildren: 0.05,
+      },
+    },
+  };
 
+  const linkVariants = {
+    closed: { opacity: 0, x: -10 },
+    open: { opacity: 1, x: 0 },
+  };
+
+  return (
+    <motion.header
+      className={`navbar ${scrolled ? "scrolled" : ""}`}
+      data-navigation="primary"
+      initial={false}
+      animate={{
+        boxShadow: scrolled
+          ? "0 4px 20px rgba(0, 0, 0, 0.1)"
+          : "0 1px 3px rgba(0, 0, 0, 0.05)",
+      }}
+      transition={{ duration: 0.3 }}
+    >
+      <div className="navbar-inner">
         <Link
           to="/"
           className="brand"
           onClick={closeMenu}
           aria-label="SmartTimetable AI home"
         >
-          <div className="brand-mark">
+          <motion.div
+            className="brand-mark"
+            whileHover={{ scale: 1.1, rotate: 10 }}
+            whileTap={{ scale: 0.95 }}
+          >
             <BrainCircuit size={20} />
-          </div>
+          </motion.div>
 
           <div className="brand-copy">
             <strong>SmartTimetable</strong>
@@ -59,58 +99,72 @@ export default function Navbar() {
           </div>
         </Link>
 
-        <nav
+        <motion.nav
           className={`nav ${open ? "open" : ""}`}
           aria-label="Primary navigation"
+          variants={navVariants}
+          initial="closed"
+          animate={open ? "open" : "closed"}
         >
           {links.map((link) => (
-            <NavLink
-              key={link.to}
-              to={link.to}
-              end={link.to === "/"}
-              onClick={closeMenu}
-            >
-              {link.label}
-            </NavLink>
+            <motion.div key={link.to} variants={linkVariants}>
+              <NavLink
+                to={link.to}
+                end={link.to === "/"}
+                onClick={closeMenu}
+                className={({ isActive }) => (isActive ? "active" : "")}
+              >
+                {link.label}
+              </NavLink>
+            </motion.div>
           ))}
-        </nav>
+        </motion.nav>
 
         <div className="navbar-actions">
-
-          <span className="system-status">
+          <motion.span
+            className="system-status"
+            aria-label="System online"
+            animate={{
+              opacity: [1, 0.6, 1],
+            }}
+            transition={{
+              duration: 2,
+              repeat: Infinity,
+              ease: "easeInOut",
+            }}
+          >
             <i />
             System online
-          </span>
+          </motion.span>
 
-          <Link
-            className="nav-solve"
-            to="/solver"
-            onClick={closeMenu}
+          <motion.div
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
           >
-            Run ORBIT
-          </Link>
+            <Link className="nav-solve" to="/solver" onClick={closeMenu}>
+              <Zap size={14} />
+              Run ORBIT
+            </Link>
+          </motion.div>
 
-          <button
+          <motion.button
             className="menu-button"
             type="button"
             onClick={() => setOpen((value) => !value)}
-            aria-label={
-              open
-                ? "Close navigation"
-                : "Open navigation"
-            }
+            aria-label={open ? "Close navigation" : "Open navigation"}
             aria-expanded={open}
+            whileHover={{ backgroundColor: "rgba(99, 102, 241, 0.1)" }}
+            whileTap={{ scale: 0.9 }}
           >
-            {open ? (
-              <X size={20} />
-            ) : (
-              <Menu size={20} />
-            )}
-          </button>
-
+            <motion.div
+              animate={{ rotate: open ? 90 : 0 }}
+              transition={{ duration: 0.3 }}
+            >
+              {open ? <X size={20} /> : <Menu size={20} />}
+            </motion.div>
+          </motion.button>
         </div>
-
       </div>
-    </header>
+    </motion.header>
   );
 }

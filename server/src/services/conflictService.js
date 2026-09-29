@@ -77,36 +77,41 @@ async function detectConflicts() {
     const entry = entries[i];
 
     /*
-     * 1. Lecturer availability
+     * 1. Lecturer availability check
+     * FIXED: Only check if lecturer has availability data.
+     * If no availability data exists, assume available.
      */
-    const lecturerAvailability = entry.lecturer.availabilities.filter(
-      (availability) =>
-        availability.dayOfWeek === entry.timeSlot.dayOfWeek
-    );
-
-    if (lecturerAvailability.length > 0) {
-      const available = lecturerAvailability.some(
+    if (entry.lecturer.availabilities.length > 0) {
+      const lecturerAvailability = entry.lecturer.availabilities.filter(
         (availability) =>
-          availability.available &&
-          timeToMinutes(availability.startTime) <=
-            timeToMinutes(entry.timeSlot.startTime) &&
-          timeToMinutes(availability.endTime) >=
-            timeToMinutes(entry.timeSlot.endTime)
+          availability.dayOfWeek === entry.timeSlot.dayOfWeek
       );
 
-      if (!available) {
-        conflicts.push(
-          createConflict({
-            timetableEntryId: entry.id,
-            type: "LECTURER_UNAVAILABLE",
-            title: "Lecturer unavailable",
-            description: `${entry.lecturer.name} is not available during ${entry.timeSlot.label}.`,
-            metadata: {
-              lecturerId: entry.lecturerId,
-              timeSlotId: entry.timeSlotId,
-            },
-          })
+      if (lecturerAvailability.length > 0) {
+        // FIXED: Check if lecturer is NOT available during this slot
+        const isAvailable = lecturerAvailability.some(
+          (availability) =>
+            availability.available &&
+            timeToMinutes(availability.startTime) <=
+              timeToMinutes(entry.timeSlot.startTime) &&
+            timeToMinutes(availability.endTime) >=
+              timeToMinutes(entry.timeSlot.endTime)
         );
+
+        if (!isAvailable) {
+          conflicts.push(
+            createConflict({
+              timetableEntryId: entry.id,
+              type: "LECTURER_UNAVAILABLE",
+              title: "Lecturer unavailable",
+              description: `${entry.lecturer.name} is not available during ${entry.timeSlot.label}.`,
+              metadata: {
+                lecturerId: entry.lecturerId,
+                timeSlotId: entry.timeSlotId,
+              },
+            })
+          );
+        }
       }
     }
 
@@ -166,34 +171,38 @@ async function detectConflicts() {
         );
       }
 
-      const venueAvailability = entry.venue.availabilities.filter(
-        (availability) =>
-          availability.dayOfWeek === entry.timeSlot.dayOfWeek
-      );
-
-      if (venueAvailability.length > 0) {
-        const available = venueAvailability.some(
+      // FIXED: Only check venue availability if availability data exists
+      if (entry.venue.availabilities.length > 0) {
+        const venueAvailability = entry.venue.availabilities.filter(
           (availability) =>
-            availability.available &&
-            timeToMinutes(availability.startTime) <=
-              timeToMinutes(entry.timeSlot.startTime) &&
-            timeToMinutes(availability.endTime) >=
-              timeToMinutes(entry.timeSlot.endTime)
+            availability.dayOfWeek === entry.timeSlot.dayOfWeek
         );
 
-        if (!available) {
-          conflicts.push(
-            createConflict({
-              timetableEntryId: entry.id,
-              type: "VENUE_UNAVAILABLE",
-              title: "Venue unavailable",
-              description: `${entry.venue.name} is not available during ${entry.timeSlot.label}.`,
-              metadata: {
-                venueId: entry.venueId,
-                timeSlotId: entry.timeSlotId,
-              },
-            })
+        if (venueAvailability.length > 0) {
+          // FIXED: Check if venue is NOT available during this slot
+          const isAvailable = venueAvailability.some(
+            (availability) =>
+              availability.available &&
+              timeToMinutes(availability.startTime) <=
+                timeToMinutes(entry.timeSlot.startTime) &&
+              timeToMinutes(availability.endTime) >=
+                timeToMinutes(entry.timeSlot.endTime)
           );
+
+          if (!isAvailable) {
+            conflicts.push(
+              createConflict({
+                timetableEntryId: entry.id,
+                type: "VENUE_UNAVAILABLE",
+                title: "Venue unavailable",
+                description: `${entry.venue.name} is not available during ${entry.timeSlot.label}.`,
+                metadata: {
+                  venueId: entry.venueId,
+                  timeSlotId: entry.timeSlotId,
+                },
+              })
+            );
+          }
         }
       }
 
@@ -226,6 +235,7 @@ async function detectConflicts() {
         continue;
       }
 
+      // LECTURER DOUBLE-BOOKING
       if (entry.lecturerId === other.lecturerId) {
         conflicts.push(
           createConflict({
@@ -235,11 +245,14 @@ async function detectConflicts() {
             description: `${entry.lecturer.name} is assigned to ${entry.course.code} and ${other.course.code} at the same time.`,
             metadata: {
               conflictingEntryId: other.id,
+              otherCourseCode: other.course.code,
+              overlappingSlot: entry.timeSlot.label,
             },
           })
         );
       }
 
+      // VENUE DOUBLE-BOOKING
       if (
         entry.venueId &&
         other.venueId &&
@@ -253,11 +266,15 @@ async function detectConflicts() {
             description: `${entry.venue.name} is assigned to ${entry.course.code} and ${other.course.code} at the same time.`,
             metadata: {
               conflictingEntryId: other.id,
+              otherCourseCode: other.course.code,
+              venueId: entry.venueId,
+              overlappingSlot: entry.timeSlot.label,
             },
           })
         );
       }
 
+      // STUDENT GROUP CLASH
       if (entry.studentGroupId === other.studentGroupId) {
         conflicts.push(
           createConflict({
@@ -267,6 +284,9 @@ async function detectConflicts() {
             description: `${entry.studentGroup.name} is assigned to ${entry.course.code} and ${other.course.code} at the same time.`,
             metadata: {
               conflictingEntryId: other.id,
+              otherCourseCode: other.course.code,
+              studentGroupId: entry.studentGroupId,
+              overlappingSlot: entry.timeSlot.label,
             },
           })
         );

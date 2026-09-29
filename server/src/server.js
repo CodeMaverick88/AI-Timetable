@@ -47,7 +47,9 @@ app.get("/api/health/database", async (req, res, next) => {
 
 app.use("/api/conflicts", conflictRoutes);
 app.use("/api/solver", solverRoutes);
+app.use("/api/solver", require("./routes/applyMoves"));
 app.use("/api/timetable", timetableRoutes);
+app.use("/api/demo", require("./routes/demoRoutes"));
 
 app.use(errorHandler);
 

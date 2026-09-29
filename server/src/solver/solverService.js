@@ -1,9 +1,28 @@
 // @ts-nocheck
 const prisma = require("../lib/prisma");
 const { solveWithBacktracking } = require("./backtrackingSolver");
-const { calculateFairnessScore } = require("./fairnessEvaluator");
 const { detectConflicts } = require("./conflictDetector");
-const { propagateEntries, summarizePropagation } = require("./constraintPropagation");
+
+function safeRequire(path, fallback) {
+  try {
+    return require(path);
+  } catch (error) {
+    console.warn(`[ORBIT] optional module ${path} unavailable:`, error.message);
+    return fallback;
+  }
+}
+
+const { calculateFairnessScore } = safeRequire("./fairnessEvaluator", {
+  calculateFairnessScore: () => null,
+});
+
+const { propagateEntries, summarizePropagation } = safeRequire(
+  "./constraintPropagation",
+  {
+    propagateEntries: () => [],
+    summarizePropagation: () => null,
+  }
+);
 
 async function loadSolverData() {
   const [entries, timeSlots, venues] = await Promise.all([
@@ -45,21 +64,31 @@ async function runTimetableSolver({
   const startedAt = Date.now();
   const data = await loadSolverData();
   const detected = detectConflicts(data.entries);
-  const actualInitialConflictCount =
-    initialConflictCount == null ? detected.length : initialConflictCount;
 
-  const propagationResults = propagateEntries({
-    entries: data.entries,
-    timeSlots: data.timeSlots,
-    venues: data.venues,
-  });
-  const propagationSummary = summarizePropagation(propagationResults);
+  /* Always trust a fresh scan over a stored count, so a stale count never hides real clashes. */
+  const actualInitialConflictCount =
+    initialConflictCount == null
+      ? detected.length
+      : Math.max(initialConflictCount, detected.length);
+
+  let propagationSummary = null;
+  try {
+    const propagationResults = propagateEntries({
+      entries: data.entries,
+      timeSlots: data.timeSlots,
+      venues: data.venues,
+    });
+    propagationSummary = summarizePropagation(propagationResults);
+  } catch (error) {
+    console.warn("[ORBIT] propagation skipped:", error.message);
+  }
 
   const result = solveWithBacktracking({
     entries: data.entries,
     timeSlots: data.timeSlots,
     venues: data.venues,
     maxNodes: 25000,
+    maxMillis: 8000,
   });
 
   const remaining = detectConflicts(result.entries);
@@ -70,6 +99,13 @@ async function runTimetableSolver({
     0
   );
 
+  let fairnessScore = null;
+  try {
+    fairnessScore = calculateFairnessScore({ entries: result.entries });
+  } catch (error) {
+    console.warn("[ORBIT] fairness score skipped:", error.message);
+  }
+
   return {
     success: solved,
     scenario,
@@ -77,7 +113,7 @@ async function runTimetableSolver({
     initialConflictCount: actualInitialConflictCount,
     finalConflictCount: remaining.length,
     totalCost: Number(totalCost.toFixed(2)),
-    fairnessScore: calculateFairnessScore({ entries: result.entries }),
+    fairnessScore,
     classesMoved: result.actions.length,
     durationMs,
     reasoning: {

@@ -1,5 +1,25 @@
+// @ts-nocheck
 const prisma = require("../lib/prisma");
 const { runTimetableSolver } = require("../solver/timetableSolver");
+const { detectAndSaveConflicts } = require("../services/conflictService");
+
+function toActionRow(solverRunId, action) {
+  return {
+    solverRunId,
+    timetableEntryId: action.timetableEntryId,
+    actionType: action.actionType,
+    fromTimeSlotId: action.fromTimeSlotId,
+    toTimeSlotId: action.toTimeSlotId,
+    fromVenueId: action.fromVenueId,
+    toVenueId: action.toVenueId,
+    cost: action.cost,
+    fairnessPenalty: action.fairnessPenalty,
+    valid: action.valid,
+    rejectionReason: action.rejectionReason,
+    reasoning: action.reasoning,
+    actionOrder: action.actionOrder,
+  };
+}
 
 async function runSolver(req, res, next) {
   try {
@@ -34,60 +54,35 @@ async function runSolver(req, res, next) {
         await prisma.timetableEntry.update({
           where: { id: entry.id },
           data: {
-            timeSlotId: entry.timeSlot.id,
-            venueId: entry.venue?.id || null,
+            timeSlotId: entry.timeSlot ? entry.timeSlot.id : entry.timeSlotId,
+            venueId: entry.venue ? entry.venue.id : entry.venueId,
           },
         });
       }
+    }
 
-      await prisma.conflict.updateMany({
-        where: { resolved: false },
-        data: { resolved: true },
-      });
-
-      if (result.actions.length > 0) {
-        await prisma.solverAction.createMany({
-          data: result.actions.map((action) => ({
-            solverRunId: solverRun.id,
-            timetableEntryId: action.timetableEntryId,
-            actionType: action.actionType,
-            fromTimeSlotId: action.fromTimeSlotId,
-            toTimeSlotId: action.toTimeSlotId,
-            fromVenueId: action.fromVenueId,
-            toVenueId: action.toVenueId,
-            cost: action.cost,
-            fairnessPenalty: action.fairnessPenalty,
-            valid: action.valid,
-            rejectionReason: action.rejectionReason,
-            reasoning: action.reasoning,
-            actionOrder: action.actionOrder,
-          })),
-        });
-      }
-    } else if (result.actions.length > 0) {
+    if (result.actions.length > 0) {
       await prisma.solverAction.createMany({
-        data: result.actions.map((action) => ({
-          solverRunId: solverRun.id,
-          timetableEntryId: action.timetableEntryId,
-          actionType: action.actionType,
-          fromTimeSlotId: action.fromTimeSlotId,
-          toTimeSlotId: action.toTimeSlotId,
-          fromVenueId: action.fromVenueId,
-          toVenueId: action.toVenueId,
-          cost: action.cost,
-          fairnessPenalty: action.fairnessPenalty,
-          valid: action.valid,
-          rejectionReason: action.rejectionReason,
-          reasoning: action.reasoning,
-          actionOrder: action.actionOrder,
-        })),
+        data: result.actions.map((action) =>
+          toActionRow(solverRun.id, action)
+        ),
       });
     }
+
+    const verification = await detectAndSaveConflicts();
 
     res.json({
       ...result,
       solverRunId: solverRun.id,
       persisted: result.success,
+      finalConflictCount: verification.conflictCount,
+      success: verification.conflictCount === 0 && result.success,
+      status:
+        verification.conflictCount === 0 && result.success
+          ? "COMPLETED"
+          : result.status,
+      timeSlots: result.timeSlots,
+      venues: result.venues,
     });
   } catch (error) {
     next(error);
@@ -99,9 +94,7 @@ async function getSolverRun(req, res, next) {
     const solverRun = await prisma.solverRun.findUnique({
       where: { id: req.params.id },
       include: {
-        actions: {
-          orderBy: { actionOrder: "asc" },
-        },
+        actions: { orderBy: { actionOrder: "asc" } },
       },
     });
 
@@ -112,10 +105,7 @@ async function getSolverRun(req, res, next) {
       });
     }
 
-    res.json({
-      success: true,
-      solverRun,
-    });
+    res.json({ success: true, solverRun });
   } catch (error) {
     next(error);
   }
@@ -139,11 +129,7 @@ async function getSolverActions(req, res, next) {
       orderBy: { actionOrder: "asc" },
     });
 
-    res.json({
-      success: true,
-      count: actions.length,
-      actions,
-    });
+    res.json({ success: true, count: actions.length, actions });
   } catch (error) {
     next(error);
   }
