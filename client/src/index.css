@@ -1,13 +1,4 @@
-/*
-  SmartTimetable stylesheet entry point.
 
-  Keep all component and page styling in app.css.
-  Do not paste the old beige/gold timetable stylesheet here.
-*/
-@import "./app.css";
-/* ========================================
-   HOME PAGE STYLES
-   ======================================== */
 .home-page {
   animation: fadeIn 0.5s ease;
 }
